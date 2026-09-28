@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "po-backend"
+version = "0.1.0"
+description = "FastAPI backend for purchase order extraction and review"
+requires-python = ">=3.10"
+# po_extractor is installed separately from ../packages/po_extractor (see Dockerfile / README).
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0.30,<3",
+    "psycopg[binary]>=3.2,<4",
+    "alembic>=1.13,<2",
+    "pyjwt>=2.9,<3",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# The app runs from backend/ (uvicorn, alembic, pytest); installing this project only pulls dependencies.
+[tool.setuptools]
+packages = []

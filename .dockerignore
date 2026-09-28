@@ -1,0 +1,13 @@
+# Build context for backend/Dockerfile is the repo root: keep it small and secret-free.
+.env
+.git
+.DS_Store
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.egg-info
+.venv
+venv
+data/uploads
+order-examples
+frontend

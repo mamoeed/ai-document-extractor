@@ -1,0 +1,31 @@
+# Secrets
+.env
+
+# Runtime data
+data/uploads/*
+!data/uploads/.gitkeep
+
+# Original example folder (read-only copy; the tracked copies live in samples/)
+order-examples/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Node
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
