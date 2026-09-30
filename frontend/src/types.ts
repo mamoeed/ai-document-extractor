@@ -71,7 +71,12 @@ export interface ProcessingResult {
     extraction_method: string | null;
     model_name: string | null;
     duration_ms: number;
-    token_usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
+    token_usage: {
+      prompt_tokens: number;
+      completion_tokens: number;
+      total_tokens: number;
+      estimated_cost_usd?: number | null;
+    } | null;
     llm_attempts: number;
     pages_total: number | null;
     pages_sent: number | null;

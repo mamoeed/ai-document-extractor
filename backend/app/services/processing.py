@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -173,6 +174,40 @@ def _nested_model(annotation: Any) -> Optional[type[BaseModel]]:
 
 
 # ------------------------------------------------------------------ helpers
+
+
+# ------------------------------------------------------------------ delete
+
+
+def delete_file(db: Session, file_id: uuid.UUID, user: str, settings: AppSettings) -> None:
+    """Delete the database row and the stored upload folder UPLOAD_DIR/<id>/."""
+    row = get_file_or_404(db, file_id)
+    if row.status == "PROCESSING" and not _is_stale(row.uploaded_at):
+        raise HTTPException(status.HTTP_409_CONFLICT, "File is still being processed; delete it when it has finished")
+
+    name, folder = row.original_filename, Path(row.stored_path).parent
+    db.delete(row)
+    db.commit()
+
+    # Only ever remove the per-file folder inside UPLOAD_DIR.
+    upload_root = settings.upload_dir.resolve()
+    target = folder.resolve()
+    if target.parent != upload_root or target.name != str(file_id):
+        log.warning("Row %s deleted; not removing %s because it is not UPLOAD_DIR/<id>", file_id, folder)
+    else:
+        try:
+            shutil.rmtree(target)
+        except FileNotFoundError:
+            log.warning("Row %s deleted; upload folder %s was already gone", file_id, target)
+        except OSError as exc:
+            log.error("Row %s deleted but its upload folder %s could not be removed: %s", file_id, target, exc)
+    log.info("Deleted %s (%s) by %s", name, file_id, user)
+
+
+def _is_stale(uploaded_at: datetime) -> bool:
+    if uploaded_at.tzinfo is None:  # SQLite returns naive UTC timestamps
+        uploaded_at = uploaded_at.replace(tzinfo=timezone.utc)
+    return uploaded_at < datetime.now(timezone.utc) - STALE_AFTER
 
 
 def get_file_or_404(db: Session, file_id: uuid.UUID) -> ProcessedFile:

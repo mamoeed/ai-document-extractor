@@ -84,6 +84,11 @@ The JWT is kept in memory and in `sessionStorage`, and expires after `JWT_EXPIRE
      you accepted it as-is. The AI's original verdict stays visible ("AI: Low confidence · 43%"),
      together with a table of the fields you changed.
 
+To remove an entry, click 🗑 in its row or **Delete** in the side panel and confirm. This
+permanently deletes the database row (including any review) and the stored original file. Rows
+that are still processing cannot be deleted until they finish, or until they are older than
+10 minutes and so count as stuck.
+
 Rows in **ERROR** with no extraction (e.g. the model was unreachable) show an empty template. You can
 fill it in by hand and confirm it the same way.
 
@@ -181,8 +186,10 @@ It exits with code 2 on a configuration or master-data error.
 | Backend exits with `CONFIGURATION ERROR` | Set `DEEPINFRA_API_KEY` (not `changeme`) and `VLM_MODEL` in `.env`, then `docker compose up -d`. |
 | Rows fail with `MODEL_UNAVAILABLE: DeepInfra rejected the API key (HTTP 401)` | Wrong or revoked key. Fix `DEEPINFRA_API_KEY` in `.env` and run `docker compose up -d backend` (the backend re-reads `.env` on recreate). |
 | `MODEL_UNAVAILABLE: Model '…' not found (HTTP 404)` | `VLM_MODEL` is misspelled or not available on your DeepInfra account. Use a model with image input, e.g. `Qwen/Qwen3-VL-235B-A22B-Instruct`. |
-| `MODEL_UNAVAILABLE: VLM request timed out after 120s` | Large or multi-page files, or DeepInfra is slow. Raise `VLM_TIMEOUT_S` (keep it below nginx's `proxy_read_timeout 300s`), or lower `MAX_PDF_PAGES` / `PDF_RENDER_DPI`. |
-| UI toast "Backend timed out" (HTTP 504) | nginx gave up after 300 s: the same fix as the timeout above. |
+| `MODEL_UNAVAILABLE: VLM stopped sending data for 120s` / `did not start answering within 120s` | Responses are streamed; `VLM_TIMEOUT_S` is the longest allowed silence. DeepInfra is overloaded or stuck: retry later, or raise `VLM_TIMEOUT_S`. |
+| `MODEL_UNAVAILABLE: VLM did not finish within VLM_TOTAL_TIMEOUT_S=600s` | A very large order (the model writes ~11–13 tokens/s here, ~70–100 tokens per line item). Raise `VLM_TOTAL_TIMEOUT_S` **and** `proxy_read_timeout` in `frontend/nginx.conf` (keep nginx ≥ 60 s higher), or lower `MAX_PDF_PAGES`. |
+| `EXTRACTION_SCHEMA_INVALID: Model output was cut off at VLM_MAX_TOKENS=…` | The order has too many lines for the output limit (4096 tokens ≈ 50 lines). Raise `VLM_MAX_TOKENS` (e.g. 8192). |
+| UI toast "No response for … it may still be processing" | The browser/nginx connection ended before the backend finished. The row reappears as *Processing* and updates by itself when done. |
 | `EXTRACTION_SCHEMA_INVALID` | The model returned unusable JSON `VLM_MAX_RETRIES + 1` times. See *Raw results → meta.debug.last_raw_output*. If the model rejects JSON mode, set `VLM_JSON_MODE=false`. |
 | HTTP 400 from DeepInfra mentioning `response_format` | Set `VLM_JSON_MODE=false`. |
 | `Bind for 0.0.0.0:8080 failed: port is already allocated` | Another process uses 8080 (`lsof -iTCP:8080 -sTCP:LISTEN`). Stop it, or change the published port in `docker-compose.yml` (`"8081:80"`). |

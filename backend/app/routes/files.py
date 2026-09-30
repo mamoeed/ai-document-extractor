@@ -1,7 +1,7 @@
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -71,3 +71,15 @@ async def review_file(
     """Save the human-edited order, re-validate it (no model call) and mark the row reviewed."""
     row = await processing.handle_review(file_id, body.order, user, db, settings)
     return to_detail(row)
+
+
+@router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_file(
+    file_id: uuid.UUID,
+    user: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    settings: AppSettings = Depends(get_settings),
+) -> Response:
+    """Delete the row (including any review) and the stored original file. Cannot be undone."""
+    processing.delete_file(db, file_id, user, settings)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -18,10 +18,12 @@ export function FilesTable({
   rows,
   selectedId,
   onSelect,
+  onDelete,
 }: {
   rows: Row[];
   selectedId: string | null;
   onSelect: (row: Row) => void;
+  onDelete: (row: Row) => void;
 }) {
   if (!rows.length) {
     return <div className="empty">No files yet. Upload purchase orders above.</div>;
@@ -40,6 +42,7 @@ export function FilesTable({
             <th>Confidence</th>
             <th>Main issue</th>
             <th>Human reviewed</th>
+            <th aria-label="Actions"></th>
           </tr>
         </thead>
         <tbody>
@@ -80,6 +83,21 @@ export function FilesTable({
                   <span className="text-warn small">Needs review</span>
                 ) : (
                   <span className="muted">—</span>
+                )}
+              </td>
+              <td>
+                {row.status !== "PROCESSING" && (
+                  <button
+                    className="icon-button delete-button"
+                    title="Delete file and database entry"
+                    aria-label={`Delete ${row.original_filename}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(row);
+                    }}
+                  >
+                    🗑
+                  </button>
                 )}
               </td>
             </tr>

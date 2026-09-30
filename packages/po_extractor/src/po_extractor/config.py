@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     vlm_model: Optional[str] = None
     vlm_temperature: float = 0.0
     vlm_max_tokens: int = 4096
+    # Responses are streamed: max seconds without receiving any data from the model.
     vlm_timeout_s: float = 120.0
+    # Max seconds for all model calls of one file, retries included (keep below nginx proxy_read_timeout).
+    vlm_total_timeout_s: float = 600.0
     vlm_max_retries: int = 2
     # Send response_format={"type": "json_object"}; disable only if a model rejects it.
     vlm_json_mode: bool = True

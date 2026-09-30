@@ -150,4 +150,5 @@ export const api = {
       body: JSON.stringify({ order }),
     }),
   originalBlob: (id: string) => request<Blob>(`/files/${id}/original`),
+  deleteFile: (id: string) => request<unknown>(`/files/${id}`, { method: "DELETE" }),
 };

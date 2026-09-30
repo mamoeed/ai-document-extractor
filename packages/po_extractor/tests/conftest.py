@@ -3,9 +3,10 @@ from __future__ import annotations
 import copy
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 import pytest
 
@@ -113,13 +114,53 @@ def order_dict(template: dict[str, Any], **overrides: Any) -> dict[str, Any]:
 
 # ------------------------------------------------------------------ fake VLM
 
-Reply = Union[str, dict, Exception]
+@dataclass
+class StreamReply:
+    """A streamed answer; ``fail_after_first_chunk`` is raised while the stream is being read."""
+
+    content: str
+    finish_reason: str = "stop"
+    fail_after_first_chunk: Optional[Exception] = None
+
+
+Reply = Union[str, dict, Exception, StreamReply]
+
+
+def _usage(cost: Optional[float]) -> SimpleNamespace:
+    return SimpleNamespace(prompt_tokens=1000, completion_tokens=200, total_tokens=1200, estimated_cost=cost)
+
+
+def _chunk(content: Optional[str] = None, finish: Optional[str] = None, usage: Any = None) -> SimpleNamespace:
+    delta = SimpleNamespace(content=content)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=finish)], usage=usage)
+
+
+class FakeStream:
+    """Mimics DeepInfra: content chunks, a finish chunk with usage (no cost), then a usage-only chunk with cost."""
+
+    def __init__(self, reply: StreamReply) -> None:
+        self.reply = reply
+        self.closed = False
+
+    def __iter__(self):
+        text = self.reply.content
+        size = max(1, len(text) // 3)
+        for index, start in enumerate(range(0, len(text), size)):
+            yield _chunk(content=text[start : start + size])
+            if index == 0 and self.reply.fail_after_first_chunk is not None:
+                raise self.reply.fail_after_first_chunk
+        yield _chunk(finish=self.reply.finish_reason, usage=_usage(None))
+        yield SimpleNamespace(choices=[], usage=_usage(0.0004))
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeCompletions:
     def __init__(self, replies: list[Reply]) -> None:
         self.replies = list(replies)
         self.calls: list[dict[str, Any]] = []
+        self.streams: list[FakeStream] = []
 
     def create(self, **kwargs: Any) -> Any:
         self.calls.append(copy.deepcopy(kwargs))
@@ -128,11 +169,11 @@ class FakeCompletions:
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
-        content = reply if isinstance(reply, str) else json.dumps(reply)
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content), finish_reason="stop")],
-            usage=SimpleNamespace(prompt_tokens=1000, completion_tokens=200, total_tokens=1200),
-        )
+        if not isinstance(reply, StreamReply):
+            reply = StreamReply(reply if isinstance(reply, str) else json.dumps(reply))
+        assert kwargs.get("stream") is True, "the client must stream"
+        self.streams.append(FakeStream(reply))
+        return self.streams[-1]
 
 
 class FakeOpenAI:
@@ -171,6 +212,11 @@ def fake_vlm(monkeypatch):
         return Handle()  # type: ignore[return-value]
 
     return install
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_delay(monkeypatch):
+    monkeypatch.setattr(client_module, "_RETRY_DELAY_S", 0)
 
 
 @pytest.fixture

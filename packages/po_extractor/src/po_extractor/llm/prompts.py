@@ -33,8 +33,8 @@ SCHEMA_TEMPLATE = """{
   "line_items": [
     {
       "position": "string or null - line/position number as printed, e.g. '001' or '1'",
-      "item_number": "string, REQUIRED - value from the document's main 'Item no.' column/field",
-      "reference_number": "string or null - any other per-line number ('Your item no.', 'Your Order no.', 'Drawing no.', manufacturer no.)",
+      "item_number": "string, REQUIRED - the value labelled 'Item no.' for this line (main column, or inline like 'Item no.: X'); never an unlabelled number",
+      "reference_number": "string or null - any other per-line number ('Your item no.', 'Your Order no.', 'Drawing no.', an unlabelled manufacturer/part no.)",
       "description": "string or null",
       "quantity": "number or null",
       "unit": "string or null - exactly as printed, e.g. 'Stk', 'pcs', 'canisters'",
@@ -70,8 +70,8 @@ SYSTEM_PROMPT = f"""You extract purchase orders (POs) into JSON for the supplier
 
 ## Line items
 - One entry per ordered position. No entries for subtotals, VAT, totals, notes or text-only lines.
-- item_number: the value from the document's main "Item no." column or field.
-- reference_number: any other per-line number such as "Your item no.", "Your Order no.", "Drawing no." or a manufacturer number. If there are several, join them with "; " in printed order, the customer's own item/order number first.
+- item_number: the value labelled "Item no." for that line - in the main "Item no." column, or printed inline next to the label (e.g. "Item no.: AB-12345"). A number printed with the description but WITHOUT the "Item no." label (e.g. a manufacturer or part number) is never the item_number, even if it appears first.
+- reference_number: any other per-line number such as "Your item no.", "Your Order no.", "Drawing no." or an unlabelled manufacturer/part number. If there are several, join them with "; " in printed order, the customer's own item/order number first.
 - description: as printed (join multi-line descriptions with a space).
 - quantity and unit as printed; unit_price is the price per 1 unit; line_net_amount is the line's net total.
 
@@ -86,7 +86,7 @@ SYSTEM_PROMPT = f"""You extract purchase orders (POs) into JSON for the supplier
 - Never put a value into a field whose label does not fit, just to fill it.
 - field_confidence: for each key, a number 0..1 for how sure you are that the value is correct AND taken from the right label: 1.0 = clearly printed and unambiguous; 0.8 = readable but label or position slightly ambiguous; 0.5 = hard to read or inferred; 0 = not found. Be honest - low values send the order to a human reviewer.
 - extraction_notes: short notes on anything unclear (hard-to-read characters, ambiguous labels, several candidate values), or null.
-- Respond with ONLY the JSON object - no markdown, no code fences, no comments.
+- Respond with ONLY the JSON object, minified on a single line (no indentation, no line breaks) - no markdown, no code fences, no comments.
 
 ## JSON schema (types and meaning of every field)
 {SCHEMA_TEMPLATE}

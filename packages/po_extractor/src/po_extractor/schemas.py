@@ -204,6 +204,8 @@ class TokenUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    # DeepInfra's usage.estimated_cost, summed over attempts; None if the provider did not report it.
+    estimated_cost_usd: Optional[float] = None
 
 
 class Meta(BaseModel):

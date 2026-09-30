@@ -227,3 +227,42 @@ def test_stale_processing_rows_marked_interrupted():
         db.refresh(fresh)
         assert (old.status, old.error_message) == ("ERROR", "interrupted")
         assert fresh.status == "PROCESSING"
+
+
+# ----------------------------------------------------------------- delete
+
+
+def test_delete_removes_row_and_file(client, auth, fake_processing):
+    row = upload(client, auth, "Order example 4.png").json()
+    folder = get_settings().upload_dir / row["id"]
+    assert folder.is_dir()
+
+    assert client.delete(f"/api/files/{row['id']}").status_code == 401  # needs a token
+    response = client.delete(f"/api/files/{row['id']}", headers=auth)
+    assert response.status_code == 204
+    assert not folder.exists()
+    assert client.get(f"/api/files/{row['id']}", headers=auth).status_code == 404
+    assert row["id"] not in {r["id"] for r in client.get("/api/files", headers=auth).json()}
+    assert client.delete(f"/api/files/{row['id']}", headers=auth).status_code == 404
+
+
+def test_delete_reviewed_row(client, auth, fake_processing):
+    row = upload(client, auth, "Order example 4.png").json()
+    client.put(f"/api/files/{row['id']}/review", headers=auth, json={"order": row["extracted_json"]})
+    assert client.delete(f"/api/files/{row['id']}", headers=auth).status_code == 204
+
+
+def test_delete_processing_row_only_when_stale(client, auth):
+    with new_session() as db:
+        fresh = ProcessedFile(original_filename="busy.pdf", stored_path="/nowhere/x/busy.pdf", uploaded_by="admin",
+                              status="PROCESSING", needs_human_review=False, issues=[])
+        stuck = ProcessedFile(original_filename="stuck.pdf", stored_path="/nowhere/y/stuck.pdf", uploaded_by="admin",
+                              status="PROCESSING", needs_human_review=False, issues=[],
+                              uploaded_at=utcnow() - timedelta(minutes=30))
+        db.add_all([fresh, stuck])
+        db.commit()
+        fresh_id, stuck_id = str(fresh.id), str(stuck.id)
+
+    assert client.delete(f"/api/files/{fresh_id}", headers=auth).status_code == 409
+    # stored_path is outside UPLOAD_DIR: the row is deleted, nothing on disk is touched
+    assert client.delete(f"/api/files/{stuck_id}", headers=auth).status_code == 204

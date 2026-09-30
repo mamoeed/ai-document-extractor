@@ -16,10 +16,12 @@ export function SidePanel({
   fileId,
   onClose,
   onUpdated,
+  onDelete,
 }: {
   fileId: string;
   onClose: () => void;
   onUpdated: (detail: FileDetail) => void;
+  onDelete: (detail: FileDetail) => void;
 }) {
   const toasts = useToasts();
   const [detail, setDetail] = useState<FileDetail | null>(null);
@@ -134,6 +136,11 @@ export function SidePanel({
                 {detail.file_type === "xlsx" ? "Download original" : "Open original ↗"}
               </button>
             )}
+            {detail && detail.status !== "PROCESSING" && (
+              <button className="button danger" onClick={() => onDelete(detail)}>
+                Delete
+              </button>
+            )}
             <button className="icon-button big" onClick={onClose} aria-label="Close">
               ×
             </button>
@@ -183,8 +190,10 @@ export function SidePanel({
                 </div>
                 {editable && (
                   <p className="muted small">
-                    Correct any wrong values, then click <strong>Confirm correct details</strong>. The AI extraction is
-                    kept unchanged; your version is stored separately and re-validated against the master data.
+                    Correct any wrong values, then click <strong>Confirm correct details</strong>. Your version is saved
+                    next to the AI's original extraction, which is not modified. The customer and item matching is then
+                    run again on your version (no AI call), and the status, issues and confidence shown for this file
+                    are replaced by that result.
                   </p>
                 )}
                 <JsonEditor value={text} onChange={setText} readOnly={!editable} />
@@ -447,6 +456,8 @@ function ProcessingInfo({ detail }: { detail: FileDetail }) {
       `${meta.token_usage.prompt_tokens} in / ${meta.token_usage.completion_tokens} out` +
         (meta.llm_attempts > 1 ? ` (${meta.llm_attempts} attempts)` : ""),
     ]);
+    const cost = meta.token_usage.estimated_cost_usd;
+    rows.push(["Cost (DeepInfra estimate)", cost != null ? `$${cost.toFixed(5)}` : "not reported"]);
   }
   if (meta?.pages_total) rows.push(["Pages", `${meta.pages_sent ?? "?"} of ${meta.pages_total} sent as images`]);
   if (detail.result_json?.extraction_confidence != null) {

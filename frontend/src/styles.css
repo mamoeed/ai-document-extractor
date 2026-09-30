@@ -104,6 +104,25 @@ code,
   background: var(--primary-hover);
 }
 
+.button.danger {
+  color: var(--red);
+  border-color: #f0b8b3;
+}
+
+.button.danger:hover:not(:disabled) {
+  background: var(--red-bg);
+  border-color: var(--red);
+}
+
+.delete-button {
+  font-size: 15px;
+  opacity: 0.45;
+}
+
+.delete-button:hover {
+  opacity: 1;
+}
+
 .button:disabled {
   opacity: 0.5;
   cursor: not-allowed;

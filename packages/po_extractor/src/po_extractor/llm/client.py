@@ -7,8 +7,9 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
+import httpx
 import openai
 from openai import OpenAI
 from pydantic import ValidationError
@@ -79,15 +80,24 @@ def _format_validation_error(exc: Exception) -> str:
     return f"Invalid JSON: {exc}"
 
 
+# Retry once, after a short pause, when the request could not be started (429/5xx/connection reset).
+# A request that timed out is NOT retried: it would only double the wait.
+_RETRY_DELAY_S = 2.0
+_PROGRESS_LOG_EVERY_S = 30.0
+
+
 class VLMClient:
+    """Streams the model's answer: VLM_TIMEOUT_S is the longest allowed silence between received
+    chunks, VLM_TOTAL_TIMEOUT_S caps all model calls for one file (retries included)."""
+
     def __init__(self, settings: Settings) -> None:
         settings.require_llm()
         self.settings = settings
         self._client = OpenAI(
             base_url=settings.deepinfra_base_url,
             api_key=settings.deepinfra_api_key.get_secret_value(),  # type: ignore[union-attr]
-            timeout=settings.vlm_timeout_s,
-            max_retries=1,  # one transport-level retry for 429/5xx/connection resets
+            timeout=settings.vlm_timeout_s,  # per read: with streaming this is an inactivity timeout
+            max_retries=0,  # retries are handled in _open_stream (never for timeouts)
         )
 
     def extract(self, payload: ExtractionInput) -> ExtractionOutput:
@@ -95,12 +105,22 @@ class VLMClient:
         messages = build_messages(payload)
         usage = TokenUsage()
         max_attempts = self.settings.vlm_max_retries + 1
+        deadline = time.perf_counter() + self.settings.vlm_total_timeout_s
         last_error, raw = "", ""
         for attempt in range(1, max_attempts + 1):
-            raw = self._complete(messages, usage, attempt)
+            raw, finish = self._complete(messages, usage, attempt, deadline)
             try:
                 order = ExtractedOrder.model_validate(parse_json_response(raw))
             except (ValueError, ValidationError) as exc:  # JSONDecodeError is a ValueError
+                if finish == "length":
+                    # Retrying would be cut off at the same place.
+                    raise ExtractionSchemaError(
+                        f"Model output was cut off at VLM_MAX_TOKENS={self.settings.vlm_max_tokens} tokens "
+                        "(order too long for the limit) - raise VLM_MAX_TOKENS in .env",
+                        raw_output=raw,
+                        attempts=attempt,
+                        usage=usage,
+                    ) from exc
                 last_error = _format_validation_error(exc)
                 log.warning("VLM output invalid (attempt %d/%d): %s", attempt, max_attempts, last_error)
                 log.debug("Invalid VLM output (truncated): %.2000s", raw)
@@ -117,59 +137,130 @@ class VLMClient:
             usage=usage,
         )
 
-    def _complete(self, messages: list[dict[str, Any]], usage: TokenUsage, attempt: int) -> str:
+    def _complete(
+        self, messages: list[dict[str, Any]], usage: TokenUsage, attempt: int, deadline: float
+    ) -> tuple[str, Optional[str]]:
+        """One streamed completion. Returns (content, finish_reason) and adds to ``usage``."""
         settings = self.settings
         kwargs: dict[str, Any] = {
             "model": settings.vlm_model,
             "messages": messages,
             "temperature": settings.vlm_temperature,
             "max_tokens": settings.vlm_max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if settings.vlm_json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
         started = time.perf_counter()
-        log.info("Calling VLM %s (attempt %d)", settings.vlm_model, attempt)
-        try:
-            response = self._client.chat.completions.create(**kwargs)
-        except openai.APITimeoutError as exc:
-            raise ModelUnavailableError(
-                f"VLM request timed out after {settings.vlm_timeout_s:g}s (VLM_TIMEOUT_S)"
-            ) from exc
-        except openai.AuthenticationError as exc:
-            raise ModelUnavailableError(
-                f"DeepInfra rejected the API key (HTTP 401) - check DEEPINFRA_API_KEY. {_api_message(exc)}"
-            ) from exc
-        except openai.NotFoundError as exc:
-            raise ModelUnavailableError(
-                f"Model '{settings.vlm_model}' not found (HTTP 404) - check VLM_MODEL. {_api_message(exc)}"
-            ) from exc
-        except openai.APIStatusError as exc:
-            raise ModelUnavailableError(f"VLM returned HTTP {exc.status_code}: {_api_message(exc)}") from exc
-        except openai.APIConnectionError as exc:
-            raise ModelUnavailableError(
-                f"Cannot reach the VLM at {settings.deepinfra_base_url}: {exc.__cause__ or exc}"
-            ) from exc
+        log.info("Calling VLM %s (attempt %d, streaming)", settings.vlm_model, attempt)
+        stream = self._open_stream(kwargs)
 
-        elapsed = time.perf_counter() - started
-        if response.usage:
-            usage.prompt_tokens += response.usage.prompt_tokens or 0
-            usage.completion_tokens += response.usage.completion_tokens or 0
-            usage.total_tokens += response.usage.total_tokens or 0
-        choice = response.choices[0] if response.choices else None
-        content = (choice.message.content if choice and choice.message else None) or ""
-        finish = choice.finish_reason if choice else None
+        parts: list[str] = []
+        finish: Optional[str] = None
+        last_usage: Any = None
+        next_progress_log = started + _PROGRESS_LOG_EVERY_S
+        try:
+            for chunk in stream:
+                if chunk.usage is not None:
+                    last_usage = chunk.usage  # DeepInfra repeats usage; the last copy carries estimated_cost
+                for choice in chunk.choices or []:
+                    if choice.delta is not None and choice.delta.content:
+                        parts.append(choice.delta.content)
+                    if choice.finish_reason:
+                        finish = choice.finish_reason
+                now = time.perf_counter()
+                if now > deadline:
+                    raise ModelUnavailableError(
+                        f"VLM did not finish within VLM_TOTAL_TIMEOUT_S={settings.vlm_total_timeout_s:g}s "
+                        f"({sum(map(len, parts))} characters received)"
+                    )
+                if now >= next_progress_log:
+                    log.info("VLM still generating: %d characters after %.0fs", sum(map(len, parts)), now - started)
+                    next_progress_log += _PROGRESS_LOG_EVERY_S
+        except httpx.TimeoutException as exc:
+            raise ModelUnavailableError(
+                f"VLM stopped sending data for {settings.vlm_timeout_s:g}s (VLM_TIMEOUT_S) after "
+                f"{time.perf_counter() - started:.0f}s and {sum(map(len, parts))} characters"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ModelUnavailableError(
+                f"Connection to the VLM broke after {time.perf_counter() - started:.0f}s: {type(exc).__name__}: {exc}"
+            ) from exc
+        except openai.APIError as exc:  # error event sent inside the stream
+            raise ModelUnavailableError(f"VLM reported an error mid-response: {exc}") from exc
+        finally:
+            stream.close()
+
+        content = "".join(parts)
+        cost = estimated_cost(last_usage)
+        if last_usage is not None:
+            usage.prompt_tokens += last_usage.prompt_tokens or 0
+            usage.completion_tokens += last_usage.completion_tokens or 0
+            usage.total_tokens += last_usage.total_tokens or 0
+            if cost is not None:
+                usage.estimated_cost_usd = (usage.estimated_cost_usd or 0.0) + cost
         log.info(
-            "VLM answered in %.1fs (finish=%s, prompt_tokens=%s, completion_tokens=%s)",
-            elapsed,
+            "VLM answered in %.1fs (finish=%s, prompt_tokens=%s, completion_tokens=%s, estimated_cost=%s)",
+            time.perf_counter() - started,
             finish,
-            response.usage.prompt_tokens if response.usage else "?",
-            response.usage.completion_tokens if response.usage else "?",
+            last_usage.prompt_tokens if last_usage is not None else "?",
+            last_usage.completion_tokens if last_usage is not None else "?",
+            f"${cost:.6f}" if cost is not None else "n/a",
         )
         if finish == "length":
             log.warning("VLM output was cut off at VLM_MAX_TOKENS=%d", settings.vlm_max_tokens)
         log.debug("VLM raw output (truncated): %.3000s", content)
-        return content
+        return content, finish
+
+    def _open_stream(self, kwargs: dict[str, Any]) -> Any:
+        settings = self.settings
+        for try_number in (1, 2):
+            try:
+                return self._client.chat.completions.create(**kwargs)
+            except openai.APITimeoutError as exc:  # before APIConnectionError: it is a subclass
+                raise ModelUnavailableError(
+                    f"VLM did not start answering within {settings.vlm_timeout_s:g}s (VLM_TIMEOUT_S)"
+                ) from exc
+            except openai.AuthenticationError as exc:
+                raise ModelUnavailableError(
+                    f"DeepInfra rejected the API key (HTTP 401) - check DEEPINFRA_API_KEY. {_api_message(exc)}"
+                ) from exc
+            except openai.NotFoundError as exc:
+                raise ModelUnavailableError(
+                    f"Model '{settings.vlm_model}' not found (HTTP 404) - check VLM_MODEL. {_api_message(exc)}"
+                ) from exc
+            except (openai.RateLimitError, openai.InternalServerError) as exc:
+                if try_number == 1:
+                    log.warning("VLM returned HTTP %d, retrying once in %gs", exc.status_code, _RETRY_DELAY_S)
+                    time.sleep(_RETRY_DELAY_S)
+                    continue
+                raise ModelUnavailableError(f"VLM returned HTTP {exc.status_code}: {_api_message(exc)}") from exc
+            except openai.APIStatusError as exc:
+                raise ModelUnavailableError(f"VLM returned HTTP {exc.status_code}: {_api_message(exc)}") from exc
+            except openai.APIConnectionError as exc:
+                if try_number == 1:
+                    log.warning("Cannot reach the VLM (%s), retrying once in %gs", exc.__cause__ or exc, _RETRY_DELAY_S)
+                    time.sleep(_RETRY_DELAY_S)
+                    continue
+                raise ModelUnavailableError(
+                    f"Cannot reach the VLM at {settings.deepinfra_base_url}: {exc.__cause__ or exc}"
+                ) from exc
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+def estimated_cost(usage: Any) -> Optional[float]:
+    """DeepInfra adds ``estimated_cost`` (USD) to the OpenAI ``usage`` object; the SDK keeps it as an extra field."""
+    if usage is None:
+        return None
+    value = getattr(usage, "estimated_cost", None)
+    if value is None:
+        value = (getattr(usage, "model_extra", None) or {}).get("estimated_cost")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _api_message(exc: openai.APIStatusError) -> str:
