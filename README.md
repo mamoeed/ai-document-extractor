@@ -10,7 +10,7 @@ You need Docker (Docker Desktop, or Docker Engine with Compose v2) and a
 [DeepInfra API key](https://deepinfra.com/dash/api_keys).
 
 ```bash
-git clone <this-repo-url> po-extractor && cd po-extractor
+git clone https://github.com/mamoeed/ai-document-extractor.git && cd ai-document-extractor
 cp .env.example .env          # then set DEEPINFRA_API_KEY in .env
 docker compose up --build
 ```
