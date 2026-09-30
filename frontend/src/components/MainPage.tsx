@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "../api";
 import type { FileDetail, FileSummary, Health, Row } from "../types";
-import { FilesTable } from "./FilesTable";
+import { FilesTable, isSelectable } from "./FilesTable";
 import { SidePanel } from "./SidePanel";
 import { ErrorDetails, useToasts } from "./Toasts";
 import { UploadZone } from "./UploadZone";
@@ -82,6 +82,8 @@ export function MainPage({ username, onLogout }: { username: string; onLogout: (
   const [healthError, setHealthError] = useState<string | null>(null);
   const [needsReviewOnly, setNeedsReviewOnly] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
   const queue = useRef<{ localId: string; file: File }[]>([]);
   const running = useRef(0);
   const nextLocalId = useRef(1);
@@ -204,6 +206,50 @@ export function MainPage({ username, onLogout }: { username: string; onLogout: (
     [refresh, toasts],
   );
 
+  const setChecked = useCallback((ids: string[], checked: boolean) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+
+  // Forget selections of rows that no longer exist or can't be exported (e.g. deleted).
+  useEffect(() => {
+    setCheckedIds((prev) => {
+      const valid = new Set(rows.filter(isSelectable).map((r) => r.id));
+      const next = new Set([...prev].filter((id) => valid.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rows]);
+
+  async function downloadSelected() {
+    const ids = rows.filter((r) => checkedIds.has(r.id)).map((r) => r.id); // table order: newest first
+    setExporting(true);
+    try {
+      const data = await api.exportFiles(ids);
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `purchase-orders-${stamp}.json`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      const skipped = (data.skipped as unknown[] | undefined)?.length ?? 0;
+      toasts.success(
+        `Downloaded ${data.count} order${data.count === 1 ? "" : "s"}`,
+        skipped ? `${skipped} skipped - see "skipped" in the file` : "",
+      );
+    } catch (err) {
+      toasts.error("Could not export the selected files", err);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const activeUploads = rows.filter((r) => r.local && r.status === "PROCESSING").length;
   const visible = useMemo(
     () => (needsReviewOnly ? rows.filter((r) => r.needs_human_review && r.status !== "PROCESSING") : rows),
@@ -250,6 +296,19 @@ export function MainPage({ username, onLogout }: { username: string; onLogout: (
             {rows.length} file{rows.length === 1 ? "" : "s"} · {needsReviewCount} need review
           </div>
           <div className="toolbar-right">
+            {checkedIds.size > 0 && (
+              <button className="link-button" onClick={() => setCheckedIds(new Set())}>
+                Clear selection
+              </button>
+            )}
+            <button
+              className="button primary"
+              disabled={checkedIds.size === 0 || exporting}
+              onClick={() => void downloadSelected()}
+              title="Download order number, customer and items of the selected files as one JSON file"
+            >
+              {exporting ? "Exporting…" : `Download JSON (${checkedIds.size})`}
+            </button>
             <label className="checkbox">
               <input type="checkbox" checked={needsReviewOnly} onChange={(e) => setNeedsReviewOnly(e.target.checked)} />
               Needs review only
@@ -274,6 +333,8 @@ export function MainPage({ username, onLogout }: { username: string; onLogout: (
             selectedId={selectedId}
             onSelect={(row) => setSelectedId(row.id)}
             onDelete={(row) => void deleteRow(row)}
+            selectedIds={checkedIds}
+            onSetSelected={setChecked}
           />
         )}
       </main>

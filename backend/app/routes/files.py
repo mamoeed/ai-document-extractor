@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from ..auth import get_current_user
 from ..config import AppSettings, get_settings
 from ..db import get_db
-from ..schemas import FileDetail, FileSummary, ReviewRequest, to_detail, to_summary
-from ..services import processing
+from ..schemas import ExportRequest, FileDetail, FileSummary, ReviewRequest, to_detail, to_summary
+from ..services import export, processing
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
@@ -31,6 +31,15 @@ async def upload_file(
     """Upload ONE file; it is processed synchronously and the stored row is returned."""
     row = await processing.handle_upload(file, user, db, settings)
     return to_detail(row)
+
+
+@router.post("/export")
+def export_selected(
+    body: ExportRequest, _: str = Depends(get_current_user), db: Session = Depends(get_db)
+) -> dict:
+    """Compact JSON of the selected files: order number, customer (number, legal name) and items.
+    Uses the human-reviewed version where one exists, otherwise the AI extraction."""
+    return export.export_files(db, body.ids)
 
 
 @router.get("", response_model=list[FileSummary])

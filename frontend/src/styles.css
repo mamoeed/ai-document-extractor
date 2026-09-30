@@ -354,6 +354,27 @@ input:focus {
   border-bottom: none;
 }
 
+.select-cell {
+  width: 34px;
+  padding-right: 0 !important;
+  cursor: default;
+}
+
+.select-cell input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.link-button {
+  border: none;
+  background: none;
+  color: var(--primary);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
 .filename {
   font-weight: 500;
   max-width: 260px;

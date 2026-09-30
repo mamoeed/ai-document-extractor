@@ -266,3 +266,41 @@ def test_delete_processing_row_only_when_stale(client, auth):
     assert client.delete(f"/api/files/{fresh_id}", headers=auth).status_code == 409
     # stored_path is outside UPLOAD_DIR: the row is deleted, nothing on disk is touched
     assert client.delete(f"/api/files/{stuck_id}", headers=auth).status_code == 204
+
+
+# ----------------------------------------------------------------- export
+
+
+def test_export_selected_files(client, auth, fake_processing):
+    ai = upload(client, auth, "purchase_order_northbridge.xlsx").json()
+    reviewed = upload(client, auth, "Order example 4.png").json()
+    edited = dict(reviewed["extracted_json"])
+    edited["customer"] = {**edited["customer"], "legal_name": "Northbridge Catering Systems Limited"}
+    client.put(f"/api/files/{reviewed['id']}/review", headers=auth, json={"order": edited})
+    # the fake processor has no canned answer for this file -> 500, row stored as ERROR without extraction
+    failed = client.post("/api/files", headers=auth, files={"file": ("x.txt", b"x")}).json()["file"]
+    missing = "00000000-0000-0000-0000-000000000000"
+
+    assert client.post("/api/files/export", json={"ids": [ai["id"]]}).status_code == 401
+    assert client.post("/api/files/export", headers=auth, json={"ids": []}).status_code == 422
+
+    response = client.post("/api/files/export", headers=auth,
+                           json={"ids": [reviewed["id"], ai["id"], failed["id"], missing, ai["id"]]})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 2
+    first, second = body["orders"]  # requested order kept, duplicate dropped
+
+    assert first["file_id"] == reviewed["id"]
+    assert first["data_source"] == "human_reviewed"
+    assert first["customer"] == {"customer_number": "58264", "legal_name": "Northbridge Catering Systems Limited",
+                                 "matched": False}
+    assert first["order_number"] == "PO-7642091"
+    assert [i["item_number"] for i in first["items"]] == ["7842136"]
+
+    assert second["data_source"] == "ai_extraction"
+    assert second["match_result"] == "NO_MATCH"
+    assert [(i["item_number"], i["matched"], i["quantity"], i["unit"]) for i in second["items"]] == [
+        ("7842136", True, 5.0, "pcs"), ("628450", False, 5.0, "sets")]
+
+    assert {s["reason"] for s in body["skipped"]} == {"not found", "no extracted data (processing failed)"}

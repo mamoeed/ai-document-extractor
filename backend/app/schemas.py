@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .models import ProcessedFile
 
@@ -21,6 +21,10 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     username: str
     expires_in_minutes: int
+
+
+class ExportRequest(BaseModel):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=1000)
 
 
 class ReviewRequest(BaseModel):

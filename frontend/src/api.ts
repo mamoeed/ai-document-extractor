@@ -150,5 +150,11 @@ export const api = {
       body: JSON.stringify({ order }),
     }),
   originalBlob: (id: string) => request<Blob>(`/files/${id}/original`),
+  exportFiles: (ids: string[]) =>
+    request<Json>("/files/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    }),
   deleteFile: (id: string) => request<unknown>(`/files/${id}`, { method: "DELETE" }),
 };
